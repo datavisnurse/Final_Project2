@@ -1,0 +1,236 @@
+---
+title: "Adverse Childhood Experiences Analysis"
+author: "Janet"
+date: "`r Sys.Date()`"
+output: html_document
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(shiny)
+library(dplyr)
+library(ggplot2)
+library(stringr)
+library(readxl)
+library(tidyr)
+
+```
+
+```{r read data, include=FALSE}
+
+# Load the ACE_re.xlsx data
+ace_data <- read_excel("ACE_re.xlsx")  # Replace with the correct path
+
+numeric_data <- ace_data %>%
+  filter(DataFormat == "Number") %>%
+  mutate(Data_numeric = as.numeric(Data))  # Ensure numeric values are in the correct format
+
+percent_data <- ace_data %>%
+  filter(DataFormat == "Percent") 
+
+# View the first few rows of each dataset
+head(numeric_data)
+head(percent_data)
+
+
+# Function to clean and convert Data column
+clean_and_convert <- function(data, format) {
+  data %>%
+    filter(DataFormat == format) %>%
+    mutate(Data = gsub("[^0-9.-]", "", Data)) %>%  # Remove non-numeric characters
+    mutate(Data = na_if(Data, "")) %>%             # Replace empty strings with NA
+    mutate(Data = as.numeric(Data))                # Convert to numeric
+}
+
+# Process numeric and percent data
+numeric_data <- clean_and_convert(ace_data, "Number")
+percent_data <- clean_and_convert(ace_data, "Percent")
+
+# Log problematic rows (if any)
+problematic_numeric <- numeric_data %>% filter(is.na(Data))
+problematic_percent <- percent_data %>% filter(is.na(Data))
+
+# Print to inspect
+if (nrow(problematic_numeric) > 0) {
+  print("Problematic rows in Numeric Data:")
+  print(problematic_numeric)
+}
+
+if (nrow(problematic_percent) > 0) {
+  print("Problematic rows in Percent Data:")
+  print(problematic_percent)
+}
+
+# Summarize cleaned data
+summary(numeric_data$Data)
+summary(percent_data$Data)
+
+```
+
+
+```{r, shiny, echo=TRUE}
+
+ui <- fluidPage(
+  titlePanel("Data Analysis Dashboard"),
+  
+  sidebarLayout(
+    sidebarPanel(
+      # Dropdown to select dataset
+      selectInput("dataset", "Select Dataset:",
+                  choices = c("Numeric Data" = "numeric", "Percent Data" = "percent")),
+      
+      # Dropdown to select Location Type
+      selectInput("location_type", "Select Location Type:",
+                  choices = unique(numeric_data$LocationType),
+                  selected = "State"),  # Default selected value
+      
+      # Dropdown to select Location based on Location Type
+      uiOutput("location_ui"),
+      
+      # Dropdown to select Race
+      uiOutput("race_ui"),
+      
+      # Dropdown to select Plot Type
+      selectInput("plot_type", "Select Plot Type:",
+                  choices = c("Line Plot", "Bar Plot", "Heatmap"))
+    ),
+    
+    mainPanel(
+      # Plot Output
+      plotOutput("plot"),
+      
+      # Error message if no data
+      uiOutput("error_message")
+    )
+  )
+)
+
+# Define server logic
+server <- function(input, output, session) {
+  
+  # Reactive expression to get the selected dataset
+  selected_data <- reactive({
+    if (input$dataset == "numeric") {
+      numeric_data
+    } else {
+      percent_data
+    }
+  })
+  
+  # Reactive expression to filter data based on user selections
+  filtered_data <- reactive({
+  data <- selected_data()
+  
+  # Check if the location is valid before filtering
+  if (is.null(input$location) || input$location == "") {
+    return(data)  # Return unfiltered data if location is not selected
+  }
+  
+  data <- data %>%
+    filter(LocationType == input$location_type) %>%
+    filter(Location == input$location) %>%
+    filter(Race == input$race)
+  data
+})
+  
+  # Dynamic UI for Location dropdown based on selected Location Type
+  output$location_ui <- renderUI({
+    data <- selected_data()
+    locations <- unique(data %>%
+                          filter(LocationType == input$location_type) %>%
+                          pull(Location))
+    
+    selectInput("location", "Select Location:",
+                choices = locations,
+                selected = locations[1])  # Default to the first location
+  })
+  
+  # Dynamic UI for Race dropdown
+  output$race_ui <- renderUI({
+    data <- selected_data()
+    races <- unique(data$Race)
+    
+    selectInput("race", "Select Race:",
+                choices = races,
+                selected = races[1])  # Default to the first race
+  })
+  
+  # Render error message if no data
+  output$error_message <- renderUI({
+    if (nrow(filtered_data()) == 0) {
+      div(style = "color: red;", "No data available for the selected filters.")
+    }
+  })
+  
+  # Render the plot based on user selections
+  output$plot <- renderPlot({
+    plot_data <- filtered_data()
+    
+    # Handle no data scenario
+    if (nrow(plot_data) == 0) return(NULL)
+    
+    # Ensure Data is numeric and handle NA values
+    plot_data$Data <- as.numeric(plot_data$Data)
+    plot_data <- plot_data[!is.na(plot_data$Data), ]
+    
+    # Check selected plot type
+    if (input$plot_type == "Line Plot") {
+      ggplot(plot_data, aes(x = TimeFrame, y = Data, group = Race, color = Race)) +
+        geom_line(size = 1.5) +  # Draw lines
+        geom_point(size = 3) +   # Add points for clarity
+        theme_minimal() +
+        labs(
+          title = paste("Data for", input$race, "in", input$location, "over time"),
+          x = "Year", 
+          y = "Data Value"
+        ) +
+        theme(
+          axis.text.x = element_text(angle = 45, hjust = 1),
+          plot.title = element_text(hjust = 0.5, size = 16),
+          legend.title = element_text(size = 12),
+          legend.text = element_text(size = 10)
+        )
+   
+    } else if (input$plot_type == "Bar Plot") {
+      ggplot(plot_data, aes(x = TimeFrame, y = Data, fill = Race)) +
+        geom_bar(stat = "identity", position = "dodge", width = 0.7) +
+        theme_minimal() +
+        labs(
+          title = paste("Data for", input$race, "in", input$location, "over time"),
+          x = "Year", 
+          y = "Data Value"
+        ) +
+        theme(
+          axis.text.x = element_text(angle = 45, hjust = 1),
+          plot.title = element_text(hjust = 0.5, size = 16),
+          legend.title = element_text(size = 12),
+          legend.text = element_text(size = 10)
+        )
+      
+    
+    } else if (input$plot_type == "Heatmap") {
+      ggplot(plot_data, aes(x = TimeFrame, y = Race, fill = Data)) +
+        geom_tile(color = "white") +
+        scale_fill_gradient(low = "blue", high = "red") +
+        theme_minimal() +
+        labs(
+          title = paste("Heatmap for", input$location),
+          x = "Year",
+          y = "Race",
+          fill = "Data Value"
+        ) +
+        theme(
+          axis.text.x = element_text(angle = 45, hjust = 1),
+          plot.title = element_text(hjust = 0.5, size = 16),
+          legend.title = element_text(size = 12),
+          legend.text = element_text(size = 10)
+        )
+    }
+  })
+}
+
+# Run the application
+shinyApp(ui = ui, server = server)
+
+```
